@@ -86,6 +86,7 @@ Input Files Format
 1. ``Peak`` : BED format 
 
     ``chroms``  ``start``  ``end``  ``name``  ``score``  ``[strand]``
+    
     If your bed don't have the name and score column, please fake one.
 
 2. ``Expression by Microarray`` : Result of Limma 
@@ -99,11 +100,13 @@ Input Files Format
 4. ``CTCF conserved boundary`` : BED format
 
     ``chroms``  ``start``  ``end``  ``name``  ``score``  ``[strand]``
+    
     The conserve CTCF binding sites of all the cell lines.
 
 5. ``Genome reference`` ; Downloaded from UCSC
 
     ``refseqID``  ``chroms``  ``strand``  ``txstart``  ``txend``  ``genesymbol``.
+    
     We use that as a reference to get the gene information.
     
 Output Files
