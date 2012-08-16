@@ -1,0 +1,809 @@
+#!/usr/bin/env python
+
+#########################
+####     Su Wang      ###
+####    8-15-2012     ###
+####   version 0.5    ###
+#########################
+
+"""Script Description:
+
+BETA-Binding and Expression Targets Analysis: Use the ChIP-x data and Microarray/RNAseq data to predict a factor's targets
+
+Part1:
+use binding data to calc the score of each gene to be regulated by factor.
+1. For each refseq gene in genome, input a distance (for example 100kb), then I get the peak center within 100kb from gene TSS. 
+2. filter the peaks by p-value < 1e-5 from MACS, and only get top 10,000 peaks if it's more than 10,000
+3. Then calculate a sum of 'Score' for each gene use this formula: 
+  Sg = lambda ldx: sum([math.exp(-0.5-4*t) for t in ldx])
+4. output is in bed format. the 5th column is score.
+
+input bed file should 'chr1' instead of 'chrI'
+
+Part2:
+use differentail expression data rank each genes by t-score from limma result
+1. input expression file need to be the standard limma result format
+2. Rank each genes by the t-score calculated by limma, the positive one represent up regualate,and negative one represent downregulate genes.
+3. Mutiply the rank of gene score and the rank of gene expression t score, get the the rank product
+4. Do the permutation to get the fdr to dicide the confidence of the target genes we found
+5. use the regulate potential score to do up and down regulate gene set association analysis compared to the genes with no differential expression as a background
+
+Part3:
+Get the FDR of each target genes via permutation
+
+
+This code is free software; you can redistribute it and/or modify it.
+
+@version: $0.5$
+@author: Su Wang
+@contact: wangsu0623@gmail.com
+"""
+
+#updates: 1.Add a parameter to choose how many peaks will be used for the score calculating, and the default is 10000
+#         2.Change the parameter default value to 0.5, which will be more convenient
+#         3.Output FDR expressed as a percentage
+#         4.Fix a bug of the parameter of diff_fdr
+#         5.Fix a bug of the Rank Product in the previous version, but the FDR is right
+#         6.Add the CTCF conserved binding sites to be another control for peak selection
+#         7.Make the RNA-seq data from cutdiff result available
+
+
+import sys, os, time
+import math
+import re
+from subprocess import call as subpcall
+from optparse import OptionParser
+from BETA.up_down_predict import *
+from BETA.Up_Down_score import *
+
+CHROM_CONVERT = {'chrI':'chr1','chrII':'chr2','chrIII':'chr3','chrIV':'chr4','chrV':'chr5','chrVI':'chr6',
+                 'chrVII':'chr7','chrVIII':'chr8','chrIX':'chr9','chrX':'chr10','chrXI':'chr11','chrXII':'chr12',
+                 'chrXIII':'chr13','chrXIV':'chr14','chrXV':'chr15','chrXVI':'chr16','chrXVII':'chr17','chrXVIII':'chr18',
+                 'chrXIX':'chr19','chrXX':'chr20','chrXXI':'chr21','chrXXII':'chr22','chrX':'chrX','chrY':'chrY','chrM':'chrM'}
+chroms = CHROM_CONVERT.values()
+
+#Score calc function
+Sg = lambda ldx: sum([math.exp(-0.5-4*t) for t in ldx])
+
+# print current time and information on screen
+def Info(infoStr):
+    print "[%s] %s" %(time.strftime('%H:%M:%S'), infoStr)
+    
+def run_cmd(command):
+    subpcall (command, shell = True)
+
+def prepare_optparser():
+    """
+    Prepare optparser object and validation. 
+    New options will be added in this function first.
+    """
+    usage = """usage: %prog <-p binding_file> <-e expression_file> <-k expression type> <-b CTCF conserved binding sites> <-g genome> <-p path of BGSA> [options]
+example : python BETA.py -t All_FoxA1_unique_summits_extend.bed -e GSE27682_siFoxA1_dht-siCTRL_dht.xls -n Foxa1 -g /mnt/Storage/data/RefGene/hg19.refGene -p ./BGSA.py
+"""
+    description = "BETA --- Binding Expression Target Analysis "
+    optparser = OptionParser(version="%prog v1.00", description=description, usage=usage, add_help_option=False)
+    optparser.add_option("-h","--help",action="help",help="Show this help message and exit.")
+    optparser.add_option("-p","--peakfile",dest="peakfile",type="string",
+                         help="Input the bed format peak file of the factor")
+    optparser.add_option("--pn",dest="peaknumber",type="int",
+                         help="the number of peaks you want to consider, DEFAULT=10000",default=10000)
+    optparser.add_option("-e","--diff_expr",dest="exprefile",type="string",
+                         help="Input the differential expression file get from limma result")
+    optparser.add_option("-k","--kind", dest = "kind", type = "string", help="the kind of your expression file,this is required,it can be M or R. M for Microarray. R for RNAseq")
+    optparser.add_option("-n","--name",dest="name",type="string",
+                         help="this argument is used to name the result file.If not set, the peakfile name will be used instead")
+    optparser.add_option("-b","--bound",dest="boundaryfile",type="string",
+                         help="Input the conserved CTCF binding sites boundary bed format file")
+    optparser.add_option("-d","--distance", dest="distance", type="int",
+                         help="Set a number which unit is 'base'. It will get peaks within this distance from gene TSS. default:100000 (100kb)", default=100000)
+    optparser.add_option("-g","--genome",dest="genome",type="string",
+                         help="Select a genome file (sqlite3 file) to search refGenes.")
+    optparser.add_option("--df",dest = "diff_fdr",type = "float",help = "Input a number 0~1 as a threshold to pick out the most significant differential expressed genes by FDR,\
+                               DEFAULT = 1, that is select all the genes",default = 1)
+    optparser.add_option("--da",dest="diff_amount",type = "float",help = "Input a number between 0-1, so that the script will only output a percentage of most significant \
+                               differential expressed genes,input a number bigger than 1, for example, 2000. so that the script will only output top 2000 genes\
+                               DEFAULT = 0.5, that is select all 30000 genes,NOTE:if you want to use diff_fdr, please set this parameter to 1, otherwose it will get the intersection of these two parameters",default = 0.5)
+    optparser.add_option("-c","--cutoff",dest="cutoff",type="float",
+                         help="Input a number between 0~1 as a threshold to select the closer target gene list(up regulate or down regulate or both) with the p value was called by one side ks-test, DEFAULT = 1",default = 1)
+    optparser.add_option("--pt", dest = "permutetimes", type = "int", help = "Permutaton times,give a resonable value to get an exact FDR.Gene number and permute times decide the time it will take. DEFAULT=500", default = 500)
+
+    (options,args) = optparser.parse_args()
+    if not options.peakfile and not options.genome and not options.exprefile and not options.kind:
+        optparser.print_help()
+        sys.exit(1)
+    if not os.path.isfile(options.peakfile):
+        Info('ERROR: Cannot find peak file, a tab-peak file must be given through -t (--treat).')
+        sys.exit(1)
+    if not os.path.isfile(options.exprefile):
+        Info('ERROR: Cannot find differential expression file, a tab-differential expression file must be given through -e (--diff_expr).')
+        sys.exit(1)
+    if not os.path.isfile(options.genome):
+        Info("ERROR: Genome file not found! An annottion file with the UCSC bed format file must be given through -g (--genome).")
+        sys.exit(1)
+    if not os.path.isfile(options.boundaryfile):
+        Info("ERROR: CTCF conserved boundary file not found! A CTCF conserved binding sites bed file must be given through -b (--bound).")
+        sys.exit(1)
+
+    if options.kind != 'M' and options.kind != 'R':
+        Info('ERROR: Please input the right kind of your expression file, M for Micrarray from limma result, R for RNAseq from Cuffdiff result')
+        sys.exit(1)
+    if not options.name:
+        options.name = os.path.splitext(options.peakfile)[0] + "_result"
+    if options.diff_fdr > 1 or options.diff_fdr < 0:
+        Info("--df options error, please set a number 0~1")
+        sys.exit(1)
+    if options.diff_amount < 0:
+        Info("--da options error, please set a number 0~1 or bigger than 1")
+        sys.exit(1)
+    if options.permutetimes  < 0:
+        Info("ERROR: Please input a positive integer to do the permutation")
+        sys.exit(1)
+    if options.permutetimes < 100 or options.permutetimes > 1000:
+        Info("WARNING: The permute times not resonable, too large is time wasted and too small is not exactly")
+
+    Info("Argument List: ")
+    Info("Name = " + options.name)
+    Info("Peak File = " + options.peakfile)
+    Info("Top Peaks Number = %d"%options.peaknumber)
+    Info("Distance = %d bp" %options.distance)
+    Info("Genome = %s" %options.genome)
+    Info("Boundary File = %s"%options.boundaryfile)
+    Info("Expression File = %s"%options.exprefile)
+    if options.kind == 'M':
+        Info("Expression Type = MicroArray")
+    if options.kind == 'R':
+        Info("Expression Type = RNA-Seq")
+    Info("Diffrentail Amount Threshold = %s"%str(options.diff_amount))
+    Info("Differential FDR Threshold = %s"%str(options.diff_fdr))
+    Info("Up/Down Prediction Cutoff = %d"%options.cutoff)
+    Info("Permutation Times = %d"%options.permutetimes)
+
+    return options
+
+##########################
+##        PartI         ##
+##########################
+
+class PScore:
+    
+    #Caculate every gene's regulate potential score, peaks within 100kb and in the same CTCF region will be cosidered.
+    
+    def __init__(self, options):
+
+        self.peakfile = options.peakfile
+        self.boundaryfile = options.boundaryfile
+        self.genome = options.genome
+        self.peaknumber = options.peaknumber
+
+        self.opts_string = "# Argument List:\n" +\
+                           "# Name = %s\n" %options.name +\
+                           "# peak file = %s\n" %options.peakfile +\
+                           "# distance = %d bp\n" %options.distance 
+ 
+        self.peaklist = {}
+        
+    def readfile(self): #reads the file and returns a vector: each element is a bed_row. 
+        
+        peakf = open(self.peakfile)
+        peakf = peakf.readlines()
+        boundaryf = open(self.boundaryfile)
+        boundaryf = boundaryf.readlines()
+        peaks = []
+        self.boundarylist = {}
+
+        for line in boundaryf:
+            if line.startswith('#') or not line.strip():
+                continue
+            line = line.strip()
+            line = line.split('\t')
+            line = [line[0], int(line[1]), int(line[2]), line[3], float(line[4]), line[5]]
+            #[chroms, tss, tts, name, score, strand]
+            try:
+                self.boundarylist[line[0]].append(line)
+            except:
+                self.boundarylist[line[0]] = [line]
+            
+        for peak in peakf:
+            if peak.startswith("#") or not peak.strip():
+                continue
+            peak = peak.strip()
+            peak = peak.split('\t')
+            peaks.append(peak)
+        sortpeaks = sorted(peaks, key=lambda peaks:float(peaks[4]),reverse=True)
+        
+        if len(sortpeaks) > self.peaknumber:
+            selectpeaks = sortpeaks[0:self.peaknumber]
+        else:
+            selectpeaks = sortpeaks
+        count = 0
+        self.peaklist = {}
+        
+        for line in selectpeaks:
+            #.bed-> 0:chrom 1:pStart 2:pEnd 3:peakName 4:-log10(qvalue)
+            line = [line[0], int(line[1]), int(line[2]), line[3], float(line[4])]
+            try:
+                line[0] = CHROM_CONVERT[line[0]]
+            except KeyError:
+                pass
+            try:
+                self.peaklist[line[0]].append(line)
+            except KeyError:
+                self.peaklist[line[0]] = [line]
+            count += 1
+        #peakf.close()
+            
+        for i in self.peaklist.keys():
+            self.peaklist[i].sort()
+        Info("Read file <%s> OK! All <%d> peaks." %(self.peakfile, count))
+
+    def ScoreCalc(self, distance):
+        #get at most 10k sites, p-value < 1e-5. each gene's regulatory potential sg = ...
+
+        refgene = open(self.genome,'rU')
+        self.geneInfo = []
+        for line in refgene:
+            if line.startswith('#') or line == '\n' or not line:
+                continue
+            else:
+                line = line.strip()
+                line = line.split('\t')
+                #print line
+                if line[1] in chroms:
+                    info = [line[1], line[0], str(line[3]), str(line[4]), line[2], line[5]]#['chr1', 'NM_032291', '66999824', '67210768', '+', 'SGIP1']
+                    self.geneInfo.append(info)
+                else:
+                    continue
+        count = 0
+        pvaluecutoff = 5
+        for igene in self.geneInfo:
+            gTSS = int(igene[2])
+            gTTS = int(igene[3])
+            try:
+                boundarys = self.boundarylist[igene[0]]
+            except KeyError:
+                boundarys = []
+            upstreams = []
+            downstreams = []
+            for i in boundarys:
+                if int(i[1]) > int(gTTS):
+                    upstreams.append(i[1])#boundary tss > gene tts is the upstream boundarys
+                if int(i[2]) < int(gTSS):
+                    downstreams.append(i[2])#boundary tts < gene tss is the downstream boundarys
+                else:
+                    continue
+            upstreams.sort()
+            downstreams.sort()
+            if len(upstreams) != 0:
+                uplimit = upstreams[0]
+            else:
+                uplimit = 250000000 #bigger than chr1's length
+            if len(downstreams) != 0:
+                downlimit = downstreams[-1]
+            else:
+                downlimit = 0
+            try:
+                peaks = self.peaklist[igene[0]]
+            except KeyError:
+                peaks = []
+
+            peaksInDistance = [abs((t[1]+t[2])/2-gTSS)*1.0/distance for t in peaks if t[4]>pvaluecutoff and abs((t[1]+t[2])/2-gTSS) < distance ] #peak pvalue<1e-5, and distance < distance
+            peaksInDistance.sort()
+            if len(peaksInDistance) > 10000: # extract no more than 10k peaks
+                peaksInDistance = peaksInDistance[:10000]
+            #score = sum(math.exp(-0.5-4*t[-1]) for t in peaksInDistance)
+            igene.append(Sg(peaksInDistance))
+            count += 1
+            
+        Info('Process <%d> genes'%count)
+        self.geneInfo.sort(key=lambda x:x[-1], reverse=True)
+    
+    def Output2File(self, name):
+            
+        outf = open("%s.txt"%name, "w")#peaks score and rank file
+        outf.write(self.opts_string)
+        outf.write('#chrom\ttxStart\ttxEnd\trefseq\tscore\tstrand\tsymbol\trank\n')
+        r = 1
+        for line in self.geneInfo:
+        
+            if str('%.3f'%line[6]) == '0.000':
+                #if one gene's score is zero, this gene will not be used to rank
+                outf.write('%s\t%d\t%d\t%s\t%.3f\t%s\t%s\t%s\n'%(line[0], int(line[2]), int(line[3]), line[1], line[6], line[4], line[5], 'NA'))
+            else:
+                outf.write('%s\t%d\t%d\t%s\t%.3f\t%s\t%s\t%d\n'%(line[0], int(line[2]), int(line[3]), line[1], line[6], line[4], line[5], r))
+            r += 1
+        outf.close()
+        Info("Finished! result output to <%s.txt>"%name)
+
+##########################
+##        PartII        ##
+##########################
+        
+class expr_combine:
+    
+    # Differential expressed gene discorvered by Limma for Microarray data and Cuffdiff for RNAseq data ranked by q value;
+    # Doing the Up and Down regulate test and then combine the candidate genes(both have a higer score and significant differential expressed q value);
+    # Combine the two parts and get a Rank Product of each candidate gene.
+    
+    def __init__(self,options):
+        
+        self.diff_expr = options.exprefile
+        self.cutoff = options.cutoff
+        self.diff_fdr = options.diff_fdr
+        self.diff_amount = options.diff_amount
+        self.peakfile = options.peakfile
+        self.name = options.name
+        self.upgenes = []
+        self.downgenes = []
+        self.nochange = []
+        self.selected = []
+        self.upranks = {}
+        self.downranks = {}
+        self.genome = options.genome
+        
+    def Microarray_gene_classify(self):
+        
+        exprefile = open(self.diff_expr,'rU')
+        for line in exprefile:
+            if not line.strip() or line.startswith('A'): #skip 'Affy' markers and empty lines
+                continue
+            line = line.strip()
+            line = line.split('\t') #line = [number, ]
+            if len(line) != 8:
+                continue
+            else:
+                line[1] = line[1].strip('"_at"')#up[i][0].strip('"_at"')is in order to remove "" and _at in limma result {refgene:[t_score,rank]}
+                m = re.search('\.\d',line[1])#some refseqID maybe like NM_001077.2, we need to remove the extra part
+                if not m:
+                    line[1] = line[1]
+                else:
+                    start = m.start()
+                    end = m.end()
+                    extra = line[1][start:end]
+                    line[1] = line[1].rstrip(extra)#NM_001077.1
+                #print line[1]
+                if float(line[4]) > 0:
+                    self.upgenes.append([str(line[1]),float(line[6])]) #put all the significantly upregulate genes into a list        
+                if float(line[4]) < 0:
+                    self.downgenes.append([str(line[1]),float(line[6])]) #put all the significantly downregulate genes into a list
+        Info("MicroArray Gene expression data seprated to up and down two parts.")
+        
+    def RNAseq_gene_classify(self):
+
+    # classify genes into 3 groups: up regulated, down regulated and no changes genes based on the log(fold_change)
+        exprefile = open(self.diff_expr,'rU')
+        for line in exprefile:
+            #test_id, gene_id, gene, locus, saple_1, sample_2, status, value_1, value_2,
+            #log2(fold_change value2/value1), test_sta, p_value, q_value, significance
+            if not line.strip() or line.startswith('test_id'):
+                continue
+            else:
+                line = line.strip()
+                line = line.split('\t')
+                if float(line[9]) > 0:
+                    self.upgenes.append([line[1],line[-2]])#[upgenes, q_value]
+                if float(line[9]) < 0:
+                    self.downgenes.append([line[1],line[-2]])
+                if float(line[9]) == 0:
+                    self.nochange.append([line[1],line[-2]])
+        Info("RNAseq Expression Data seprated to Up and Down two parts")
+
+    def rank_genes(self):
+        
+        #print 'rank_genes'
+        up = self.upgenes
+        up.sort(cmp=lambda x,y:cmp(x[1],y[1]))#upgene are which t score > 0, the smaller the qvaule, the more significant it is
+        
+        down = self.downgenes
+        down.sort(cmp=lambda x,y:cmp(x[1],y[1]))#downgenes are which t score < 0, the smaller qvaule, the more significant it is
+        #print down[0:5]
+
+        nochange = self.nochange
+        nochange.sort(cmp=lambda x,y:cmp(x[1],y[1]), reverse = True)
+        
+        upout = open('upgene.txt','w')
+        downout = open('downgene.txt','w')
+        
+        if self.diff_amount <= 1: #required is a percentage
+            c = int(len(up) * self.diff_amount)   #the number of up regulate genes required
+            d = int(len(down) * self.diff_amount)  # the number of down regulate genes required
+    
+        if self.diff_amount > 1:
+            c = d = int(self.diff_amount)
+        
+        for i in range(c):
+            if float(up[i][1]) <= self.diff_fdr: 
+                self.upranks[up[i][0]] = [up[i][1], int(i) + 1]
+                upout.write(up[i][0] + '\t' + str(up[i][1]) + '\t' + str(int(i) + 1) + '\n')
+            else:
+                self.upranks[up[i][0]] = [up[i][1], 'NA']
+                upout.write(up[i][0] + '\t' + str(up[i][1]) + '\t' + 'NA' + '\n')
+        for i in range(c,len(up)):
+	    #print len(up)
+            self.upranks[up[i][0]] = [up[i][1], 'NA']
+            upout.write(up[i][0] + '\t' + str(up[i][1]) + '\t' + 'NA' + '\n')
+
+        for j in range(d):
+            if float(down[j][1] <= self.diff_fdr):
+                self.downranks[down[j][0]] = [down[j][1], int(j) + 1]
+                downout.write(down[j][0] + '\t' + str(down[j][1]) + '\t' + str(int(j) + 1) + '\n')
+            else:
+                self.downranks[down[j][0]] = [down[j][1], 'NA']
+                downout.write(down[j][0] + '\t' + str(down[j][1]) + '\t' + 'NA' + '\n')               
+ 
+        for j in range(d,len(down)):
+            #print len(down)
+	    self.downranks[down[j][0]] = [down[j][1], 'NA']
+            downout.write(down[j][0] + '\t' + str(down[j][1]) + '\t' + 'NA' + '\n')
+
+        upout.close()
+        downout.close()
+
+        run_cmd("cut -f1 upgene.txt | head -" + str(c) + " > up_list.txt")
+        run_cmd("cut -f1 downgene.txt | head -" + str(d) + " > down_list.txt")
+        
+        if len(nochange) != 0:
+            notdiff = open('notdiff.txt','w')
+            notdiffamount = int((c + d)/2)
+            for k in range(notdiffamount):
+                notdiff.write(nochange[k][0] + '\n')
+        else:
+            run_cmd("cut -f1 upgene.txt | tail -" + str(c/2) + " > notdiff1.txt")
+            run_cmd("cut -f1 downgene.txt | tail -" + str(d/2) + " > notdiff2.txt")
+            run_cmd("cat notdiff1.txt notdiff2.txt > notdiff.txt")
+        Info("Prepare file for the Up/Down Test")
+
+    def ChGS(self):
+        #use Gene's ChGS.py to select a significant gene list to show the rank, from this , it will output 2 files, one is a picture in pdf file /
+        #the other is a pvalue file store the pvalue information of the up and down regulate gene list with ks-test in a txt file
+        
+        command_line = "cp " + self.peakfile + " " + self.name + ".bed" # change the input peak file's name
+        run_cmd(command_line)
+        distrun(self.name + '.bed', self.genome, 'notdiff.txt', 'up_list.txt', 'down_list.txt', 'upregulate', 'downregulate', self.name, False)
+        scorerun(self.name + '.txt', 'notdiff.txt', 'up_list.txt', 'down_list.txt', 'upregulate', 'downregulate', self.name, False)
+        ## remove some redundent files
+        run_cmd("rm up_list.txt")
+        run_cmd("rm down_list.txt")
+        run_cmd("rm upgene.txt")
+        run_cmd("rm downgene.txt")
+        run_cmd("rm notdiff*.txt")
+        run_cmd("rm " + self.name + ".bed")
+
+        Info("Finished, Find the result in %s_score.pdf"%self.name)
+        
+    def combine(self):
+        # combine the peak rank file and expression rank file, then got a summary rank (peakrank * exprank)
+        
+        ChGS_Pvalues = open(self.name + "_pvalues.txt")
+        for line in ChGS_Pvalues:
+            line = line.strip()
+            line = line.split('\t')
+            if len(line) != 2:
+                continue
+            else:
+                p = float(line[1])
+                if p <= self.cutoff:
+                    self.selected.append(line[0])
+        # get the up or down regulate gene list's pavalue in a list, like ["upregualte"]
+        if len(self.selected) == 0:
+            sys.stderr.write("Both upregualte and downregualte gene list are not closer than the background, please cheak your data or looser the cutoff!")
+            sys.exit(0)
+        else:
+            upcounts = 0
+            downcounts = 0
+            
+            for list in self.selected:
+                Info('Get the Rank Product of the %s genes'%list)
+                bgenes = []#the up regulated genes whose binding rank and expression rank are not 'NA'
+                egenes = []
+                brank = {}
+                erank = {}
+                outf = "%s_%s_target.txt"%(self.name,list[1:-1]) # remove the ("")
+                prank = {}#peak rank
+                pinf = open(self.name + '.txt') #peak rank's file result from qianzi's method
+                outf = open(outf,'w')
+                chrom = ['chr1','chr2','chr3','chr4','chr5','chr6','chr7','chr8','chr9','chr10','chr11','chr12','chr13',
+                         'chr14','chr15','chr16','chr17','chr18','chr19','chr20','chr21','chr22','chrX','chrY']
+                for line in pinf:
+                    if not line.strip():
+                        continue
+                    line = line.strip()
+                    line = line.split('\t')
+                    if line[0] not in chrom: #skip the random chromosome and chrM
+                        continue
+                    else:
+                        prank[line[3]] = [line[0], line[1], line[2], line[4], line[5], line[6],line[7]] #{refseq: chr, tss, tts, score, strand, symbol, rank}
+                    
+                if list == '"upregulate"':
+                    keys = self.upranks.keys()
+                if list == '"downregulate"':
+                    keys = self.downranks.keys()
+                    
+                pkeys = prank.keys()
+                
+                for gene in keys:
+                    if gene in pkeys:
+			if list == '"upregulate"':
+
+                            if prank[gene][6] != 'NA' and self.upranks[gene][1] != 'NA':
+                                
+                                bgenes.append([gene, prank[gene][5], prank[gene][6]])
+                                egenes.append([gene, prank[gene][5], self.upranks[gene][1]])
+                                upcounts += 1
+                            
+                            else:
+                                continue
+
+                        if list == '"downregulate"':
+                            if prank[gene][6] != 'NA' and self.downranks[gene][1] != 'NA':
+                                
+                                bgenes.append([gene, prank[gene][5], prank[gene][6]])
+                                egenes.append([gene, prank[gene][5], self.downranks[gene][1]])
+                                downcounts += 1
+                            else:
+                                continue
+                            
+                    else:
+                        continue
+                    
+                bgenes.sort(key=lambda x:x[-1])
+                egenes.sort(key=lambda x:x[-1])
+
+                i = 1
+                j = 1
+                for gene in bgenes:
+                    brank[gene[0]] = [gene[1], i]
+                    i += 1
+                for gene in egenes:
+                    erank[gene[0]] = [gene[1], j]
+                    j += 1
+
+                genes = brank.keys()
+                genenumber = len(genes)
+                
+                data = []
+                for gene in genes:
+                    RP = (float(brank[gene][1])/float(genenumber) * float(erank[gene][1])/float(genenumber)) ** 0.5
+                    data.append([gene, brank[gene][0], RP])
+                data.sort(key=lambda x:x[-1])
+                k = 1
+                for n in data:
+                    rank = k
+                    outf.write(n[0] + '\t' +n[1] + '\t' + str(n[2]) + '\t' + str(k) + '\n')
+                    k += 1
+        outf.close()
+
+        run_cmd('rm ' + self.name + "_pvalues.txt")
+        run_cmd('rm ' + self.name + ".txt")
+
+        counts = [upcounts,downcounts]
+        return (self.selected,counts)
+    
+##########################
+##      Part III        ##
+##########################
+    
+class permutation:
+    
+    #Get the FDR via multi permutations
+    def __init__(self,options,selected,counts):
+        
+        self.name = options.name
+        self.counts = counts
+        self.selected = selected
+        self.permutetimes = options.permutetimes
+        
+    def permutation(self):
+        
+        #do the permutation of peak rank and expression file by R seperately
+        
+        counts = self.counts
+        
+        lists = []
+        lists = ['up','down']
+        j = 0
+       
+        for count in counts:
+            Info("Permute %d genes %d times"%(count, self.permutetimes))
+            if count == 0:
+                pass
+            else:
+                for i in range(2):
+                        name = ['binding','expre']
+                        r_script = open('permutation.R','w')
+                        string = """
+                setwd("./")
+                suppressMessages(library(gregmisc))
+                x <- 1:%d
+                result <- matrix(0,%d,%d)
+                for (i in 1:%d){
+                y <- permute(x)
+                result[i,] = y
+                }
+                write.table(result,file = "my_permutation_%s_%s.txt", sep = "\t", quote = FALSE, col.names = NA)
+                """%(count, self.permutetimes, count, self.permutetimes, lists[j], name[i])
+                        r_script.write(string)
+                        r_script.close()
+                        run_cmd("Rscript permutation.R")
+            j += 1
+            run_cmd('rm permutation.R')
+            
+    def fdr(self):
+        #get the fdr from permutation
+        Info("From the permuation result to expect the FDR fo reach gene")
+
+        counts = self.counts
+        upoutput = '%s_uptarget.txt'%self.name
+        downoutput = '%s_downtarget.txt'%self.name
+        inf_up_perm1 = "my_permutation_up_binding.txt"
+        inf_up_perm2 = "my_permutation_up_expre.txt"
+        inf_down_perm1 = "my_permutation_down_binding.txt"
+        inf_down_perm2 = "my_permutation_down_expre.txt"
+        inf_uprank = "%s_upregulate_target.txt"%self.name
+        inf_downrank = "%s_downregulate_target.txt"%self.name
+        counts = self.counts
+        selected = self.selected
+        output = [upoutput, downoutput]
+        infile1 = []
+        infile2 = []
+        infile3 = []
+        outf = []
+          
+        for lists in selected:
+            
+            if lists == '"upregulate"' and counts[0] != 0:
+                up_infile1 = open(inf_up_perm1,'r')
+                up_infile2 = open(inf_up_perm2,'r')
+                up_infile3 = open(inf_uprank,'r')
+                outf1 = open(upoutput,'w')
+                infile1.append(up_infile1)
+                infile2.append(up_infile2)
+                infile3.append(up_infile3)
+                outf.append(outf1)
+
+            if lists == '"upregulate"' and counts[0] == 0:
+                Info("No genes are both have a peak enriched and a significant expression difference in %s genes"%lists)
+
+            if lists == '"downregulate"' and counts[1] != 0:
+                down_infile1 = open(inf_down_perm1,'r')
+                down_infile2 = open(inf_down_perm2,'r')
+                down_infile3 = open(inf_downrank,'r')
+                outf2 = open(downoutput,'w')
+                infile1.append(down_infile1)
+                infile2.append(down_infile2)
+                infile3.append(down_infile3)
+                outf.append(outf2)
+            
+            if lists == '"downregulate"' and counts[1] == 0:
+                Info("No genes are both have a peak enriched and a significant expression difference in %s genes"%lists)
+        
+        if len(infile3) != 0:
+            q = 0
+            
+            for infile in infile3:
+                
+                rank = {}#{refseqID:[symbol,RP, rank]}
+                refseqID = []
+                
+                for line in infile:
+                    if not line.strip():
+                        continue
+                    else:
+                        line = line.strip()
+
+                        line = line.split('\t')
+                        rank[line[0]] = [line[1],line[2], line[3]]#rank = {NM123:[oct4,0.0027,1],NM234:[jun,0.047,2]...}
+                        refseqID.append(line[0])
+
+                total = len(refseqID)
+                print 'total %d'%total
+                permbrank = []#store the binding rank of permutation
+                permerank = []#store the expression rank of permutation
+                
+                for line in infile1[q]:
+                    if line.startswith('\t'):
+                        continue
+                    else:
+                        line = line.strip()
+                        line = line.split('\t')
+                        permbrank.append(line[1:])#permbrank = [[],[],[]...] 500*counts
+
+                for line in infile2[q]:
+                    if line.startswith('\t'):
+                        continue
+                    else:
+                        line = line.strip()
+                        line = line.split('\t')
+                        permerank.append(line[1:])#permerank = [[],[],[]...] 500*counts
+
+                perminfos = []
+                
+                for i in range(self.permutetimes):
+                    #print i
+                    permrp = []
+                    permrank = {}
+                    
+                    for j in range(len(refseqID)):
+                        calculate = (float(permbrank[i][j])/float(total) * float(permerank[i][j])/float(total)) ** 0.5 #the RP form permuation
+                        permrp.append([refseqID[j], rank[refseqID[j]][0], calculate])
+                    permrp.sort(key=lambda x:x[-1])
+                    h = 1
+                    for c in permrp:
+                        permrank[c[0]] = [c[1],c[2],h]
+                        h += 1
+                                       
+                    perminfos.append(permrank)
+                          
+                #perminfos = [{'NM_**':[genesymbol,permbrank*permerank]},{},{}...] 500*counts
+                    
+                outf[q].write('refseqID' + '\t' + 'GeneSymbol' + '\t' + 'rank product' + '\t' + 'FDR(%)' + '\n')
+              
+                genes = []
+                k = 0
+                for gene in refseqID:
+                    old_rp = float(rank[gene][1])
+                    old_rank = int(rank[gene][-1])
+                    count = 0
+                    perm_ranks = []
+                    
+                    for i in range(self.permutetimes):
+                        perm_rank = int(perminfos[i][gene][-1])
+                        if perm_rank <= old_rank:
+                            count += 1
+                   
+                    genes = refseqID[0:k]
+                    
+                    for g in genes:
+                        for i in range(self.permutetimes):
+                            perm_rank = int(perminfos[i][g][-1])
+                            if perm_rank <= old_rank:
+                                count += 1
+                            else:
+                                continue
+                         
+
+                    rp = old_rp
+                    Erp = float(count)/float(self.permutetimes)
+                    fdr = Erp/float(old_rank) * 100
+                    outf[q].write(gene + '\t' + rank[gene][0] + '\t' + str(rp) + '\t' + str(fdr) + '\n')
+                    k += 1
+                outf[q].close()
+                Info("Done: Find the target gene prediction file in %s"%output[q])
+                q += 1
+        else:
+            Info("Target Prediction Failed, NO genes both peaks enriched and differentially expressed. Please Check your input files or loose your threshold")
+            
+        infiles = ['my_permutation*.txt', inf_uprank, inf_downrank]
+        for infile in infiles:
+            run_cmd('rm ' + infile)
+        
+def main():
+    
+    start = time.time()
+    opts=prepare_optparser()
+    g = PScore(opts)
+    g.readfile()
+    g.ScoreCalc(opts.distance)
+    g.Output2File(opts.name)
+    e = expr_combine(opts)
+    if opts.kind == 'M':
+        e.Microarray_gene_classify()
+    if opts.kind == "R":
+        e.RNAseq_gene_classify()
+    e.rank_genes()
+    e.ChGS()
+    (selected,counts) = e.combine()
+    f = permutation(opts,selected,counts)
+    f.permutation()
+    f.fdr()
+    end = time.time()
+    total = end - start
+    hour = int(total/3600)
+    minite = int(total - hour*3600)/60
+    second = int(total - hour*3600 - minite*60)
+    print 'total time: %s:%s:%s '%(hour, minite, second)
+ 
+if __name__ == "__main__":
+    main()
+    #python /Users/liulab/Desktop/DCinfoandExpr/BETA/BETA.py -p 2723_peaks.bed -e diff_expr.xls -b /Users/liulab/Desktop/updown_prediction/hg19_CTCF_bound.bed -k 'M' \
+    #-g ~/Documents/filesfromUCSC/hg19.refseq --da 500 --pn 5000 --p1 /Users/liulab/Desktop/DCinfoandExpr/BETA/up_down_predict.py --p2 /Users/liulab/Desktop/DCinfoandExpr/BETA/Up_Down_score.py
+    #--pt 20 -n test
