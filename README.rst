@@ -26,7 +26,8 @@ Command Line
 ============
 
 
-Usage
+Help
+----
 
 ::
 
@@ -36,38 +37,44 @@ Usage
    BETA [options]* -p <peak> -e <expression> -k <type> -b <boundary> -g <genome> 
    
 
-   
+Main Arguments
+--------------
 
 
-
-Options:
-  --version             Show program's version number and exit
-  
-  -h, --help            Show this help message and exit.
-  
   -p PEAKFILE, --peakfile=PEAKFILE
                               Input the bed format peak file of the factor
-                              
-  --pn=PEAKNUMBER       
-                              The number of peaks you want to consider, DEFAULT=10000
-                              
+			      
   -e EXPREFILE, --diff_expr=EXPREFILE
                               Input the differential expression file get from limma for MicroArray data and cuffdiff for RNAseq data
                               
   -k KIND, --kind=KIND  
                              The kind of your expression file,this is required, it can be M or R. M for Microarray. R for RNAseq
+			      
+  -b BOUNDARYFILE, --bound=BOUNDARYFILE
+                             Input the conserved CTCF binding sites boundary bed format file
+                             
+  -g GENOME, --genome=GENOME
+                             Select a genome file (sqlite3 file) to search refGenes.
+
+			      
+Options
+-------
+
+  --version             Show program's version number and exit
+  
+  -h, --help            Show this help message and exit.
+  
+                              
+  --pn=PEAKNUMBER       
+                              The number of peaks you want to consider, DEFAULT=10000
+                              
                             
   -n NAME, --name=NAME 
                              This argument is used to name the result file.If not set, the peakfile name will be used instead
                             
-  -b BOUNDARYFILE, --bound=BOUNDARYFILE
-                             Input the conserved CTCF binding sites boundary bed format file
                              
   -d DISTANCE, --distance=DISTANCE
                              Set a number which unit is 'base'. It will get peaks within this distance from gene TSS. default:100000(100kb)
-                             
-  -g GENOME, --genome=GENOME
-                             Select a genome file (sqlite3 file) to search refGenes.
                              
   --df=DIFF_FDR   
                             Input a number 0~1 as a threshold to pick out the most significant differential expressed genes by FDR,
@@ -88,6 +95,15 @@ Options:
                            will take. DEFAULT=500    
 
 
+Example
+-------
+
+::
+
+   BETA -p 2723_peaks.bed -e gene_exp.diff -b hg19_CTCF_bound.bed -k R -g hg19.refseq
+
+   
+   
 Input Files Format
 ==================
 
@@ -118,10 +134,6 @@ Input Files Format
     We use that as a reference to get the gene information.
 
 
-Example:
-::
-
-   BETA -p 2723_peaks.bed -e gene_exp.diff -b hg19_CTCF_bound.bed -k R -g hg19.refseq
     
 Output Files
 ============
