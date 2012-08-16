@@ -98,10 +98,10 @@ Output Files
 ============
 
 
-1. `_score.pdf` : A CDF figure to test the TF's funtion, Up pr Down regulation.
-2. `_score.r` : The R script to draw the `_score.pdf` figure
-3. `_uptarget.txt` : The uptarget genes, 4 column, Refseq, Gene Symbol, Rank Product, FDR
-4. `_downtarget.txt` : The downregulate genes, the same format to uptarget.
+1. ``score.pdf`` : A CDF figure to test the TF's funtion, Up pr Down regulation.
+2. ``score.r`` : The R script to draw the ``score.pdf`` figure
+3. ``uptarget.txt`` : The uptarget genes, 4 column, Refseq, Gene Symbol, Rank Product, FDR
+4. ``downtarget.txt`` : The downregulate genes, the same format to uptarget.
     
 **NOTE**: Up or Down target file depends on the test result in the PDF file, it will be not produced enless it passed the threshold you seted via -c --cutoff
     
