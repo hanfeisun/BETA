@@ -83,17 +83,27 @@ Usage
 Input Files Format
 ==================
 
-1. ``Peak`` ; BED format ; ``chroms``  ``start``  ``end``  ``name``  ``score``  ``[strand]``
+1. ``Peak`` : BED format 
+
+    ``chroms``  ``start``  ``end``  ``name``  ``score``  ``[strand]``
     If your bed don't have the name and score column, please fake one.
 
-2. ``Expression by Microarray`` ; Result of Limma ;  ``ID``  ``Refseq``  ``logFC``  ``AveExpre``  ``Tscore``  ``Pvalue``  ``adj.P.Value``  ``B``
+2. ``Expression by Microarray`` : Result of Limma 
 
-3. ``Expression by RNAseq`` ; Result of Cufflinks ; ``Test_id``  ``gene_id``  ``gene``  ``locus``  ``sample_1``  ``sample_2``  ``status``  ``value_1``  ``value_2``  ``Log2(foldchange)``  ``test_stat``  ``p_value``  ``q_value``  ``significant``
+    ``ID``  ``Refseq``  ``logFC``  ``AveExpre``  ``Tscore``  ``Pvalue``  ``adj.P.Value``  ``B``
 
-4. ``CTCF conserved boundary`` ; BED format ; ``chroms``  ``start``  ``end``  ``name``  ``score``  ``[strand]``
+3. ``Expression by RNAseq`` : Result of Cufflinks
+
+    ``Test_id``  ``gene_id``  ``gene``  ``locus``  ``sample_1``  ``sample_2``  ``status``  ``value_1``  ``value_2``  ``Log2(foldchange)``  ``test_stat``  ``p_value``  ``q_value``  ``significant``
+
+4. ``CTCF conserved boundary`` : BED format
+
+    ``chroms``  ``start``  ``end``  ``name``  ``score``  ``[strand]``
     The conserve CTCF binding sites of all the cell lines.
 
-5. ``Genome reference`` ; Downloaded from UCSC ; ``refseqID``  ``chroms``  ``strand``  ``txstart``  ``txend``  ``genesymbol``.
+5. ``Genome reference`` ; Downloaded from UCSC
+
+    ``refseqID``  ``chroms``  ``strand``  ``txstart``  ``txend``  ``genesymbol``.
     We use that as a reference to get the gene information.
     
 Output Files
