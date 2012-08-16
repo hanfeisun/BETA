@@ -22,23 +22,21 @@ Installation
 
     $ python setup.py install
     
-C
-=====
+Command Line
+============
 
+
+Usage
 
 ::
 
-
    $ BETA --help
-   
+
    BETA --- Binding Expression Target Analysis
    BETA [options]* -p <peak> -e <expression> -k <type> -b <boundary> -g <genome> 
    
 
    
-::
-
-   BETA -p 2723_peaks.bed -e gene_exp.diff -b hg19_CTCF_bound.bed -k R -g hg19.refseq
 
 
 
@@ -118,6 +116,12 @@ Input Files Format
     ``refseqID``  ``chroms``  ``strand``  ``txstart``  ``txend``  ``genesymbol``.
     
     We use that as a reference to get the gene information.
+
+
+Example:
+::
+
+   BETA -p 2723_peaks.bed -e gene_exp.diff -b hg19_CTCF_bound.bed -k R -g hg19.refseq
     
 Output Files
 ============
