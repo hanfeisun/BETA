@@ -22,13 +22,25 @@ Installation
 
     $ python setup.py install
     
-Usage
+C
 =====
 
-BETA <-p binding_file> <-e expression_file> <-k expression type> <-b CTCF conserved binding sites> <-g genome> [options]
-example : -p 2723_peaks.bed -e gene_exp.diff -b hg19_CTCF_bound.bed -k 'R' -g hg19.refseq -n example
 
-BETA --- Binding Expression Target Analysis
+::
+
+
+   $ BETA --help
+   
+   BETA --- Binding Expression Target Analysis
+   BETA [options]* -p <peak> -e <expression> -k <type> -b <boundary> -g <genome> 
+   
+
+   
+::
+
+   BETA -p 2723_peaks.bed -e gene_exp.diff -b hg19_CTCF_bound.bed -k R -g hg19.refseq
+
+
 
 Options:
   --version             Show program's version number and exit
