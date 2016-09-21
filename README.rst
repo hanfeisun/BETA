@@ -6,7 +6,24 @@
 Introduction
 ============
 
-This software is a tool for Transcription Factor's target prediction combine both binding data and expression data.
+Binding and Expression Target Analysis (BETA) is a software package that integrates ChIP-seq of transcription factors or chromatin regulators with differential gene expression data to infer direct target genes.
+
+Note
+====
+This is a just snapshot of the BETA repository! To download the latest version of BETA, please go to http://cistrome.org/BETA/.
+
+
+
+Citation
+========
+
+Wang, S., Sun, H., Ma, J., Zang, C., Wang, C., Wang, J., ... & Liu, X. S. (2013). Target analysis by integration of transcriptome and ChIP-seq data with BETA. Nature protocols, 8(12), 2502-2515. 
+
+
+Run BETA on Web Server
+======================
+
+Go to http://cistrome.org/ap to run on our web server at Cistrome
 
 
     
